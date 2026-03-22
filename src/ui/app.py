@@ -11,7 +11,7 @@ import httpx
 
 from ..adapters import DeepSeekAdapter, JimengAdapter
 from ..services import LLMService, ScriptService, ProjectService, Translator, ImageService
-from ..models import Script
+from ..models import Script, CharacterAppearance
 from ..utils.config import Config
 from ..utils.i18n import I18n
 from .fdialog import FileDialog
@@ -637,74 +637,235 @@ class PAVUIApp:
             dpg.configure_item("generate_btn", enabled=True)
 
     def _update_script_display(self):
-        """Update the UI to display the generated script"""
+        """Update the UI to display the generated script with editable fields"""
         if not self.current_script:
             return
 
         # Update characters panel
         dpg.delete_item("characters_panel", children_only=True)
         if self.current_script.characters:
-            for char in self.current_script.characters:
+            for idx, char in enumerate(self.current_script.characters):
                 with dpg.group(parent="characters_panel"):
-                    dpg.add_text(f"* {char.name} ({char.role})", color=(100, 200, 150))
-                    dpg.add_text(f"  Personality: {char.personality}", color=(150, 150, 150))
+                    dpg.add_text(f"角色 {idx + 1} (ID: {char.id})", color=(100, 180, 255))
+                    with dpg.group(horizontal=True):
+                        dpg.add_text("名称:", color=(150, 150, 150))
+                        dpg.add_input_text(
+                            tag=f"edit_char_name_{idx}",
+                            default_value=char.name,
+                            width=120,
+                            on_enter=True,
+                            callback=self._on_char_field_edit,
+                            user_data=(idx, "name"),
+                        )
+                        dpg.add_text("定位:", color=(150, 150, 150))
+                        dpg.add_combo(
+                            tag=f"edit_char_role_{idx}",
+                            items=["主角", "配角", "群演"],
+                            default_value=char.role,
+                            width=80,
+                            callback=self._on_char_field_edit,
+                            user_data=(idx, "role"),
+                        )
+                    with dpg.group(horizontal=True):
+                        dpg.add_text("性格:", color=(150, 150, 150))
+                        dpg.add_input_text(
+                            tag=f"edit_char_personality_{idx}",
+                            default_value=char.personality,
+                            width=-1,
+                            on_enter=True,
+                            callback=self._on_char_field_edit,
+                            user_data=(idx, "personality"),
+                        )
                     if char.appearance:
-                        appearance_text = char.appearance.to_prompt()[:80]
-                        if len(char.appearance.to_prompt()) > 80:
-                            appearance_text += "..."
-                        dpg.add_text(f"  Appearance: {appearance_text}", color=(120, 120, 120))
+                        dpg.add_text("外观:", color=(150, 150, 150))
+                        dpg.add_input_text(
+                            tag=f"edit_char_appearance_{idx}",
+                            default_value=char.appearance.to_prompt(),
+                            width=-1,
+                            multiline=True,
+                            height=40,
+                            callback=self._on_char_appearance_edit,
+                            user_data=idx,
+                        )
                     dpg.add_separator()
         else:
-            dpg.add_text("No characters", parent="characters_panel", color=(150, 150, 150))
+            dpg.add_text("暂无角色", parent="characters_panel", color=(150, 150, 150))
 
         # Update locations panel
         dpg.delete_item("locations_panel", children_only=True)
         if self.current_script.locations:
-            for loc in self.current_script.locations:
+            for idx, loc in enumerate(self.current_script.locations):
                 with dpg.group(parent="locations_panel"):
-                    dpg.add_text(f"* {loc.name}", color=(100, 200, 150))
-                    dpg.add_text(f"  Time: {loc.time_of_day} | Mood: {loc.atmosphere}", color=(150, 150, 150))
-                    desc_text = loc.description[:60]
-                    if len(loc.description) > 60:
-                        desc_text += "..."
-                    dpg.add_text(f"  {desc_text}", color=(120, 120, 120))
+                    dpg.add_text(f"场景 {idx + 1} (ID: {loc.id})", color=(100, 180, 255))
+                    with dpg.group(horizontal=True):
+                        dpg.add_text("名称:", color=(150, 150, 150))
+                        dpg.add_input_text(
+                            tag=f"edit_loc_name_{idx}",
+                            default_value=loc.name,
+                            width=150,
+                            on_enter=True,
+                            callback=self._on_loc_field_edit,
+                            user_data=(idx, "name"),
+                        )
+                        dpg.add_text("时间:", color=(150, 150, 150))
+                        dpg.add_input_text(
+                            tag=f"edit_loc_time_{idx}",
+                            default_value=loc.time_of_day,
+                            width=80,
+                            on_enter=True,
+                            callback=self._on_loc_field_edit,
+                            user_data=(idx, "time_of_day"),
+                        )
+                        dpg.add_text("氛围:", color=(150, 150, 150))
+                        dpg.add_input_text(
+                            tag=f"edit_loc_atmo_{idx}",
+                            default_value=loc.atmosphere,
+                            width=-1,
+                            on_enter=True,
+                            callback=self._on_loc_field_edit,
+                            user_data=(idx, "atmosphere"),
+                        )
+                    dpg.add_text("描述:", color=(150, 150, 150))
+                    dpg.add_input_text(
+                        tag=f"edit_loc_desc_{idx}",
+                        default_value=loc.description,
+                        width=-1,
+                        multiline=True,
+                        height=40,
+                        callback=self._on_loc_field_edit,
+                        user_data=(idx, "description"),
+                    )
                     dpg.add_separator()
         else:
-            dpg.add_text("No locations", parent="locations_panel", color=(150, 150, 150))
+            dpg.add_text("暂无场景", parent="locations_panel", color=(150, 150, 150))
 
         # Update scenes panel
         dpg.delete_item("scenes_panel", children_only=True)
         if self.current_script.scenes:
-            # Build lookup maps
             char_map = {c.id: c.name for c in self.current_script.characters}
             loc_map = {l.id: l.name for l in self.current_script.locations}
+            loc_ids = [l.id for l in self.current_script.locations]
+            loc_names = [l.name for l in self.current_script.locations]
 
-            for scene in self.current_script.scenes:
+            for idx, scene in enumerate(self.current_script.scenes):
                 with dpg.group(parent="scenes_panel"):
-                    loc_name = loc_map.get(scene.location_id, "Unknown")
-                    char_names = [char_map.get(cid, cid) for cid in scene.character_ids]
+                    dpg.add_text(f"分镜 {scene.scene_id}", color=(100, 180, 255))
+                    with dpg.group(horizontal=True):
+                        dpg.add_text("镜头:", color=(150, 150, 150))
+                        dpg.add_combo(
+                            tag=f"edit_scene_shot_{idx}",
+                            items=["远景", "全景", "中景", "近景", "特写"],
+                            default_value=scene.shot_type,
+                            width=80,
+                            callback=self._on_scene_field_edit,
+                            user_data=(idx, "shot_type"),
+                        )
+                        dpg.add_text("运动:", color=(150, 150, 150))
+                        dpg.add_combo(
+                            tag=f"edit_scene_cam_{idx}",
+                            items=["固定", "推进", "拉远", "平移", "俯仰"],
+                            default_value=scene.camera_movement,
+                            width=80,
+                            callback=self._on_scene_field_edit,
+                            user_data=(idx, "camera_movement"),
+                        )
+                        dpg.add_text("时长:", color=(150, 150, 150))
+                        dpg.add_input_text(
+                            tag=f"edit_scene_dur_{idx}",
+                            default_value=scene.duration,
+                            width=60,
+                            on_enter=True,
+                            callback=self._on_scene_field_edit,
+                            user_data=(idx, "duration"),
+                        )
+                    with dpg.group(horizontal=True):
+                        dpg.add_text("场景:", color=(150, 150, 150))
+                        loc_name = loc_map.get(scene.location_id, scene.location_id)
+                        dpg.add_combo(
+                            tag=f"edit_scene_loc_{idx}",
+                            items=loc_names if loc_names else [loc_name],
+                            default_value=loc_name,
+                            width=150,
+                            callback=self._on_scene_location_edit,
+                            user_data=(idx, loc_ids, loc_names),
+                        )
+                        char_names = [char_map.get(cid, cid) for cid in scene.character_ids]
+                        dpg.add_text(f"角色: {', '.join(char_names) or '无'}", color=(120, 120, 120))
 
-                    dpg.add_text(f"Scene {scene.scene_id}", color=(100, 180, 255))
-                    dpg.add_text(
-                        f"  {scene.shot_type} | {scene.camera_movement} | {scene.duration}",
-                        color=(150, 150, 150)
+                    dpg.add_text("画面描述:", color=(150, 150, 150))
+                    dpg.add_input_text(
+                        tag=f"edit_scene_desc_{idx}",
+                        default_value=scene.visual_description,
+                        width=-1,
+                        multiline=True,
+                        height=50,
+                        callback=self._on_scene_field_edit,
+                        user_data=(idx, "visual_description"),
                     )
-                    dpg.add_text(
-                        f"  Location: {loc_name} | Characters: {', '.join(char_names) or 'None'}",
-                        color=(120, 120, 120)
+                    dpg.add_text("旁白:", color=(150, 150, 150))
+                    dpg.add_input_text(
+                        tag=f"edit_scene_narr_{idx}",
+                        default_value=scene.narration or "",
+                        width=-1,
+                        multiline=True,
+                        height=35,
+                        callback=self._on_scene_narration_edit,
+                        user_data=idx,
                     )
-                    desc_text = scene.visual_description[:80]
-                    if len(scene.visual_description) > 80:
-                        desc_text += "..."
-                    dpg.add_text(f"  {desc_text}", color=(180, 180, 180))
-                    if scene.narration:
-                        narr_text = scene.narration[:50]
-                        if len(scene.narration) > 50:
-                            narr_text += "..."
-                        dpg.add_text(f"  Narration: {narr_text}", color=(200, 180, 100))
+                    dpg.add_text("图片Prompt(中文):", color=(150, 150, 150))
+                    dpg.add_input_text(
+                        tag=f"edit_scene_prompt_{idx}",
+                        default_value=scene.image_prompt_zh,
+                        width=-1,
+                        multiline=True,
+                        height=40,
+                        callback=self._on_scene_field_edit,
+                        user_data=(idx, "image_prompt_zh"),
+                    )
                     dpg.add_separator()
         else:
-            dpg.add_text("No scenes", parent="scenes_panel", color=(150, 150, 150))
+            dpg.add_text("暂无分镜", parent="scenes_panel", color=(150, 150, 150))
+
+    def _on_char_field_edit(self, sender, app_data, user_data):
+        """Handle character field edit"""
+        idx, field = user_data
+        if self.current_script and idx < len(self.current_script.characters):
+            setattr(self.current_script.characters[idx], field, app_data)
+
+    def _on_char_appearance_edit(self, sender, app_data, user_data):
+        """Handle character appearance edit - store as clothing (simplified)"""
+        idx = user_data
+        if self.current_script and idx < len(self.current_script.characters):
+            # Store the full text as a distinctive_features override
+            char = self.current_script.characters[idx]
+            char.appearance = CharacterAppearance(distinctive_features=app_data)
+
+    def _on_loc_field_edit(self, sender, app_data, user_data):
+        """Handle location field edit"""
+        idx, field = user_data
+        if self.current_script and idx < len(self.current_script.locations):
+            setattr(self.current_script.locations[idx], field, app_data)
+
+    def _on_scene_field_edit(self, sender, app_data, user_data):
+        """Handle scene field edit"""
+        idx, field = user_data
+        if self.current_script and idx < len(self.current_script.scenes):
+            setattr(self.current_script.scenes[idx], field, app_data)
+
+    def _on_scene_location_edit(self, sender, app_data, user_data):
+        """Handle scene location combo edit"""
+        idx, loc_ids, loc_names = user_data
+        if self.current_script and idx < len(self.current_script.scenes):
+            # Find the location ID from the selected name
+            if app_data in loc_names:
+                loc_idx = loc_names.index(app_data)
+                self.current_script.scenes[idx].location_id = loc_ids[loc_idx]
+
+    def _on_scene_narration_edit(self, sender, app_data, user_data):
+        """Handle scene narration edit"""
+        idx = user_data
+        if self.current_script and idx < len(self.current_script.scenes):
+            self.current_script.scenes[idx].narration = app_data if app_data else None
 
     def _on_generate_images_click(self, sender, app_data):
         """Handle generate images button click"""
